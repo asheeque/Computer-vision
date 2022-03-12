@@ -75,9 +75,9 @@ def ocr(test_img, characters):
     # TODO Add your code here. Do not modify the return and input arguments
 
     enrollment(characters)
-    labelled_img,ccd = detection(test_img)
-    res = recognition(test_img,ccd)
-    return res
+    ccd = detection(test_img)
+    result = recognition(ccd)
+    return result
     # raise NotImplementedError
 
 def enrollment(images):
@@ -93,8 +93,11 @@ def enrollment(images):
     for im in images:
         name = im[0]
         img = im[1]
+        if img is None:
+            des_d[name] = []
+            continue
         img = np.pad(img, [(2, ), (2, )], mode='constant',constant_values=(255))
-        img=cv2.resize(img, (150, 150))
+        img=cv2.resize(img, None, fx= 1.53, fy= 1.53)
         sift = cv2.SIFT_create()
         kp, des = sift.detectAndCompute(img,None)
         if len(kp) < 1:
@@ -102,6 +105,7 @@ def enrollment(images):
         des_d[name]=des.tolist()
     with open("features.json", "w") as outfile:  
     	json.dump(des_d, outfile)
+
     # raise NotImplementedError
 
 def detection(image):
@@ -114,17 +118,30 @@ def detection(image):
     """
     # TODO: Step 2 : Your Detection code should go here.
    
-    binary_img = np.zeros((image.shape)) 
+    binary_img = np.zeros((image.shape))
+    new_img = np.zeros((image.shape)) 
     for i in range(len(image)):
         for j in range(len(image[i])):
-            if image[i][j] < 110:
+            if image[i][j] < 125:
                 binary_img[i][j] = 1
-    labelled_img, ccd = get_connected_components(binary_img)
-    return labelled_img, ccd
-     
+    
+    labelled_image,ccd =  get_connected_components(binary_img)
+
+    #Make all the labels 255 so that generated new img consists of clear black pixels 
+    for i in range(image.shape[0]):
+        for j in range(0,image.shape[1]):
+            if labelled_image[i][j] != 0:
+                new_img[i][j] = 0
+            else:
+                new_img[i][j] = 255
+    cv2.imwrite("new_test_img.jpg",new_img)
+    return ccd
+    
 
 def get_connected_components(image):
-
+    #seq is used to do labelling for the binary image
+    #labelling is done on image 
+    #ccd is connected component dictionary which stores the x,y,width,height  for different labels.(label is the key in the dictionary)
     seq = 1
     ccd = {}
     for i in range(len(image)):
@@ -134,13 +151,15 @@ def get_connected_components(image):
                 if seq>0 and width > 1 and heigth>1:
                     ccd[seq] = min_x,max_x,width,heigth
                 seq+=1
-
-
     return image,ccd
 
 
 
 def bfs(image,i,j,seq,level):
+    #queue is used to implement breadth first search in the image
+    #dir defines the neighbours in all 8 directions
+    #while doing breadth first search,running min and running max is calculated for X and Y coordinates.
+    #Running max and min  is thenused to calculate bbox boundary
     queue = []
     queue.append([i,j])
     dir = [[1,0],[0,1],[1,1],[0,-1],[-1,0],[-1,-1],[1,-1],[-1,1]]
@@ -169,16 +188,14 @@ def bfs(image,i,j,seq,level):
     return [min_x,min_y,width,height]
             
             
-
-
 def checker (image,i,j,seq):
-
+    #checks if the current node in bfs is valid
     if i<0 or j<0 or i>=len(image) or j>=len(image[0]) or image[i][j]==0 or image[i][j]==seq:
         return False
     return True
 
 
-def recognition(image,ccd):
+def recognition(ccd):
     """ 
     Args:
         You are free to decide the input arguments.
@@ -186,80 +203,85 @@ def recognition(image,ccd):
     You are free to decide the return.
     """
     # TODO: Step 3 : Your Recognition code should go here.
-
+    #test image pixel characters were convertes to 255 for better detection which is saved as new_img
+    image = cv2.imread('new_test_img.jpg', cv2.IMREAD_GRAYSCALE)
     sift = cv2.SIFT_create()
     with open('features.json') as file:
         features = json.load(file)
 
-    temp=float('inf')
     d = {}
+    #Calculate the minimum threshold for each known characters using sum of square difference on SIFT desciptors 
     for single_feature in features:
         if len(features[single_feature]) == 0:
                 continue
         desc2 = np.asarray(features[single_feature])
         if desc2 is None:
             continue
-
         temp = float('inf')
         for key in ccd:
-            
             current_bbox = ccd[key]
             bbox_image = image[current_bbox[1]:current_bbox[1]+current_bbox[3],current_bbox[0]:current_bbox[0]+current_bbox[2]]
             bbox_image =np.pad(bbox_image, [(4, ), (4, )], mode='constant',constant_values=(255))
-            bbox_image =cv2.resize(bbox_image , (150, 150))
+            bbox_image=cv2.resize(bbox_image, None, fx= 1.2, fy= 1.28)
             kp, des = sift.detectAndCompute(bbox_image,None)
             if des is None:
                 continue
             for i in range(len(des)):
-
                 for j in range(len(desc2)):
-                    s = np.sum(np.square(np.subtract(des[i],desc2[j])))/128
+                    s = np.sum(np.square(np.subtract(des[i],desc2[j])))
                     temp=min(temp,s)
                     d[single_feature] = temp
-
     res = []
+    #Using the threshold ,recognise the characters from test image by creating bbox on test image
+    #Check if the ssd of each character is below 8 times the minimum threshold
+    #If yes then count that feature or descriptor
+    #If the number of features below 8 * threshold is more than 8 for each candidate in test, then label that character and append to result array.
     for key in ccd:
-        flag = False
         current_bbox = ccd[key]        
         bbox_image = image[current_bbox[1]:current_bbox[1]+current_bbox[3],current_bbox[0]:current_bbox[0]+current_bbox[2]]
-        bbox_image =np.pad(bbox_image, [(4, ), (4, )], mode='constant',constant_values=(255))
-        bbox_image =cv2.resize(bbox_image , (150, 150))
+        bbox_image =np.pad(bbox_image, [(6, ), (6, )], mode='constant',constant_values=(255))
         kp, des = sift.detectAndCompute(bbox_image,None)
         if des is None:
-            x = {
-                "bbox":current_bbox,
-                "name":"UNKNOWN"
-                }
-            res.append(x)
             continue
+        flag = False
         for single_feature in features:
             if len(features[single_feature]) == 0:
                 continue
             desc2 = np.asarray(features[single_feature])
             if desc2 is None:
+                x = {
+                    "bbox":current_bbox,
+                    "name":"UNKNOWN"
+                    }
+                res.append(x)
                 continue
+            co = 0
             for i in range(len(des)):
                 for j in range(len(desc2)):
-                    s = np.sum(np.square(np.subtract(des[i],desc2[j])))/128
-                    temp=min(temp,s)
-                    if s < d[single_feature] * 1.85:
-                        x = {
-                            "bbox":current_bbox,
-                            "name":single_feature
-                        }
-                        flag = True
-                        res.append(x)
+                    s = np.sum(np.square(np.subtract(des[i],desc2[j])))
+                    if s < d[single_feature] * 8:
+                        co +=1
+                        if co >2:
+                            x = {
+                                "bbox":current_bbox,
+                                "name":single_feature
+                            }
+                            flag = True
+                            res.append(x)
+                            break
+                if flag == True:
+                    break
             if flag == True:
-
-                flag = False
-                continue
+                break
         if flag == False:
-            x = {
-                "bbox":current_bbox,
-                "name":"UNKNOWN"
-                }
-            res.append(x)
 
+            y = {
+            "bbox":current_bbox,
+            "name":"UNKNOWN"
+            }
+            res.append(y)
+
+            
     return res
     # raise NotImplementedError
 
@@ -268,7 +290,7 @@ def save_results(coordinates, rs_directory):
     """
     Donot modify this code
     """
-    results = []
+    results = coordinates
     with open(os.path.join(rs_directory, 'results.json'), "w") as file:
         json.dump(results, file)
 
@@ -283,14 +305,11 @@ def main():
     for each_character in all_character_imgs :
         character_name = "{}".format(os.path.split(each_character)[-1].split('.')[0])
         characters.append([character_name, read_image(each_character, show=False)])
-        
     test_img = read_image(args.test_img)
 
     results = ocr(test_img, characters)
-    print(results)
-    with open("results.json", "w") as outfile:  
-        json.dump(results, outfile)
-    # save_results(results, args.rs_directory)
+    
+    save_results(results, args.rs_directory)
 
 
 if __name__ == "__main__":
